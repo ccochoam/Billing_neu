@@ -3,7 +3,7 @@ import psycopg2 as ps
 db_params = {
     'database': 'BillingNeuDB',
     'user': 'postgres',
-    'password': '[Agregar clave]',
+    'password': 'Test_ochoA',
     'host': 'localhost',
     'port': '5432'
 }
