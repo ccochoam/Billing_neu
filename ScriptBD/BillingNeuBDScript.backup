@@ -4,28 +4,7 @@
 
 -- Dumped from database version 9.3.25
 -- Dumped by pg_dump version 9.3.25
--- Started on 2023-11-02 09:18:34
-
-SET statement_timeout = 0;
-SET lock_timeout = 0;
-SET client_encoding = 'UTF8';
-SET standard_conforming_strings = on;
-SELECT pg_catalog.set_config('search_path', '', false);
-SET check_function_bodies = false;
-SET client_min_messages = warning;
-
-DROP DATABASE "BillingNeuDB";
---
--- TOC entry 1983 (class 1262 OID 16393)
--- Name: BillingNeuDB; Type: DATABASE; Schema: -; Owner: postgres
---
-
-CREATE DATABASE "BillingNeuDB" WITH TEMPLATE = template0 ENCODING = 'UTF8' LC_COLLATE = 'Spanish_Colombia.1252' LC_CTYPE = 'Spanish_Colombia.1252';
-
-
-ALTER DATABASE "BillingNeuDB" OWNER TO postgres;
-
-\connect "BillingNeuDB"
+-- Started on 2023-11-07 10:36:26
 
 SET statement_timeout = 0;
 SET lock_timeout = 0;
@@ -44,7 +23,7 @@ CREATE EXTENSION IF NOT EXISTS plpgsql WITH SCHEMA pg_catalog;
 
 
 --
--- TOC entry 1986 (class 0 OID 0)
+-- TOC entry 1996 (class 0 OID 0)
 -- Dependencies: 1
 -- Name: EXTENSION plpgsql; Type: COMMENT; Schema: -; Owner: 
 --
@@ -53,7 +32,82 @@ COMMENT ON EXTENSION plpgsql IS 'PL/pgSQL procedural language';
 
 
 --
--- TOC entry 196 (class 1255 OID 16485)
+-- TOC entry 204 (class 1255 OID 16555)
+-- Name: get_billing_calculations(); Type: FUNCTION; Schema: public; Owner: postgres
+--
+
+CREATE FUNCTION public.get_billing_calculations() RETURNS TABLE(id_service integer, ea double precision, ee1 double precision, ee2 double precision, ec double precision)
+    LANGUAGE plpgsql
+    AS $$
+  BEGIN
+	-- Verificar si la tabla temporal existe
+	DROP TABLE IF EXISTS BILLING_CALCULATIONS;
+
+	CREATE TEMP TABLE billing_calculations (id_service_tmp int, con_sum float, inj_sum float, c float, cu float);
+	INSERT INTO billing_calculations (id_service_tmp, con_sum, inj_sum, c, cu)
+	SELECT s.id_services, con_sum, inj_sum, COALESCE(c, 0) AS c, COALESCE(cu, 0) AS cu FROM services s
+	JOIN tariffs t ON (CASE WHEN s.voltage_level IN (2, 3) THEN t.id_market = s.id_market AND s.voltage_level = t.cdi AND t.voltage_level IS NULL
+		ELSE t.id_market = s.id_market AND s.voltage_level = t.cdi AND s.cdi = t.voltage_level END)
+	LEFT JOIN (
+	    SELECT r.id_service, SUM(c.value) AS con_sum, SUM(i.value) AS inj_sum FROM records r
+	    LEFT JOIN consumption c ON r.id_record = c.id_record LEFT JOIN injection i ON r.id_record = i.id_record GROUP BY r.id_service
+	) AS subquery ON s.id_services = subquery.id_service;
+
+	RETURN QUERY SELECT
+	 id_service_tmp, (con_sum * cu) EA, case when inj_sum <= con_sum then inj_sum * -cu else con_sum * -cu end as EE1,
+	 COALESCE(
+	 case when inj_sum <= con_sum then 0 else (con_sum - inj_sum) * (select get_sum_per_agent(id_service, con_sum - inj_sum))	
+	 end, 0) as EE1,
+	 (inj_sum * c) EC
+	from billing_calculations;
+END; 
+$$;
+
+
+ALTER FUNCTION public.get_billing_calculations() OWNER TO postgres;
+
+--
+-- TOC entry 200 (class 1255 OID 16499)
+-- Name: get_datetime_per_agent(integer, double precision); Type: FUNCTION; Schema: public; Owner: postgres
+--
+
+CREATE FUNCTION public.get_datetime_per_agent(id_serv integer, inj_sum double precision) RETURNS timestamp without time zone
+    LANGUAGE plpgsql
+    AS $$
+BEGIN
+    return r.record_timestamp FROM injection inj join records r on inj.id_record = r.id_record
+    WHERE (SELECT SUM(value) FROM injection AS i WHERE i.id_record <= inj.id_record ) <= inj_sum 
+    and id_service = id_serv order by r.id_record desc limit 1;
+END;
+$$;
+
+
+ALTER FUNCTION public.get_datetime_per_agent(id_serv integer, inj_sum double precision) OWNER TO postgres;
+
+--
+-- TOC entry 201 (class 1255 OID 16501)
+-- Name: get_sum_per_agent(integer, double precision); Type: FUNCTION; Schema: public; Owner: postgres
+--
+
+CREATE FUNCTION public.get_sum_per_agent(id_serv integer, inj_sum double precision) RETURNS double precision
+    LANGUAGE plpgsql
+    AS $$
+BEGIN
+return sum(multiply_value) from 
+(select (pa.value * c.value) multiply_value
+from xm_data_hourly_per_agent pa join records r on pa.record_timestamp = r.record_timestamp
+join consumption c on r.id_record = c.id_record
+where pa.record_timestamp >(select get_datetime_per_agent(id_serv,inj_sum)) and id_service = id_serv 
+group by id_service, pa.value, r.id_record, c.value, pa.record_timestamp
+order by pa.record_timestamp asc) as tmp;
+END;
+$$;
+
+
+ALTER FUNCTION public.get_sum_per_agent(id_serv integer, inj_sum double precision) OWNER TO postgres;
+
+--
+-- TOC entry 203 (class 1255 OID 16485)
 -- Name: gettotalea(); Type: FUNCTION; Schema: public; Owner: postgres
 --
 
@@ -86,7 +140,7 @@ $$;
 ALTER FUNCTION public.gettotalea() OWNER TO postgres;
 
 --
--- TOC entry 195 (class 1255 OID 16482)
+-- TOC entry 202 (class 1255 OID 16482)
 -- Name: gettotalec(); Type: FUNCTION; Schema: public; Owner: postgres
 --
 
@@ -120,7 +174,7 @@ SET default_tablespace = '';
 SET default_with_oids = false;
 
 --
--- TOC entry 172 (class 1259 OID 16396)
+-- TOC entry 176 (class 1259 OID 16396)
 -- Name: consumption; Type: TABLE; Schema: public; Owner: postgres; Tablespace: 
 --
 
@@ -133,7 +187,7 @@ CREATE TABLE public.consumption (
 ALTER TABLE public.consumption OWNER TO postgres;
 
 --
--- TOC entry 171 (class 1259 OID 16394)
+-- TOC entry 175 (class 1259 OID 16394)
 -- Name: consumption_id_record_seq; Type: SEQUENCE; Schema: public; Owner: postgres
 --
 
@@ -148,8 +202,8 @@ CREATE SEQUENCE public.consumption_id_record_seq
 ALTER TABLE public.consumption_id_record_seq OWNER TO postgres;
 
 --
--- TOC entry 1987 (class 0 OID 0)
--- Dependencies: 171
+-- TOC entry 1997 (class 0 OID 0)
+-- Dependencies: 175
 -- Name: consumption_id_record_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: postgres
 --
 
@@ -157,7 +211,7 @@ ALTER SEQUENCE public.consumption_id_record_seq OWNED BY public.consumption.id_r
 
 
 --
--- TOC entry 176 (class 1259 OID 16412)
+-- TOC entry 180 (class 1259 OID 16412)
 -- Name: injection; Type: TABLE; Schema: public; Owner: postgres; Tablespace: 
 --
 
@@ -170,7 +224,7 @@ CREATE TABLE public.injection (
 ALTER TABLE public.injection OWNER TO postgres;
 
 --
--- TOC entry 175 (class 1259 OID 16410)
+-- TOC entry 179 (class 1259 OID 16410)
 -- Name: injection_id_record_seq; Type: SEQUENCE; Schema: public; Owner: postgres
 --
 
@@ -185,8 +239,8 @@ CREATE SEQUENCE public.injection_id_record_seq
 ALTER TABLE public.injection_id_record_seq OWNER TO postgres;
 
 --
--- TOC entry 1988 (class 0 OID 0)
--- Dependencies: 175
+-- TOC entry 1998 (class 0 OID 0)
+-- Dependencies: 179
 -- Name: injection_id_record_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: postgres
 --
 
@@ -194,7 +248,7 @@ ALTER SEQUENCE public.injection_id_record_seq OWNED BY public.injection.id_recor
 
 
 --
--- TOC entry 174 (class 1259 OID 16404)
+-- TOC entry 178 (class 1259 OID 16404)
 -- Name: records; Type: TABLE; Schema: public; Owner: postgres; Tablespace: 
 --
 
@@ -208,7 +262,7 @@ CREATE TABLE public.records (
 ALTER TABLE public.records OWNER TO postgres;
 
 --
--- TOC entry 173 (class 1259 OID 16402)
+-- TOC entry 177 (class 1259 OID 16402)
 -- Name: records_id_record_seq; Type: SEQUENCE; Schema: public; Owner: postgres
 --
 
@@ -223,8 +277,8 @@ CREATE SEQUENCE public.records_id_record_seq
 ALTER TABLE public.records_id_record_seq OWNER TO postgres;
 
 --
--- TOC entry 1989 (class 0 OID 0)
--- Dependencies: 173
+-- TOC entry 1999 (class 0 OID 0)
+-- Dependencies: 177
 -- Name: records_id_record_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: postgres
 --
 
@@ -232,7 +286,7 @@ ALTER SEQUENCE public.records_id_record_seq OWNED BY public.records.id_record;
 
 
 --
--- TOC entry 180 (class 1259 OID 16428)
+-- TOC entry 184 (class 1259 OID 16428)
 -- Name: services; Type: TABLE; Schema: public; Owner: postgres; Tablespace: 
 --
 
@@ -247,7 +301,7 @@ CREATE TABLE public.services (
 ALTER TABLE public.services OWNER TO postgres;
 
 --
--- TOC entry 179 (class 1259 OID 16426)
+-- TOC entry 183 (class 1259 OID 16426)
 -- Name: services_id_services_seq; Type: SEQUENCE; Schema: public; Owner: postgres
 --
 
@@ -262,8 +316,8 @@ CREATE SEQUENCE public.services_id_services_seq
 ALTER TABLE public.services_id_services_seq OWNER TO postgres;
 
 --
--- TOC entry 1990 (class 0 OID 0)
--- Dependencies: 179
+-- TOC entry 2000 (class 0 OID 0)
+-- Dependencies: 183
 -- Name: services_id_services_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: postgres
 --
 
@@ -271,7 +325,7 @@ ALTER SEQUENCE public.services_id_services_seq OWNED BY public.services.id_servi
 
 
 --
--- TOC entry 182 (class 1259 OID 16438)
+-- TOC entry 186 (class 1259 OID 16438)
 -- Name: tariffs; Type: TABLE; Schema: public; Owner: postgres; Tablespace: 
 --
 
@@ -292,7 +346,7 @@ CREATE TABLE public.tariffs (
 ALTER TABLE public.tariffs OWNER TO postgres;
 
 --
--- TOC entry 181 (class 1259 OID 16436)
+-- TOC entry 185 (class 1259 OID 16436)
 -- Name: tafiffs_id_market_seq; Type: SEQUENCE; Schema: public; Owner: postgres
 --
 
@@ -307,8 +361,8 @@ CREATE SEQUENCE public.tafiffs_id_market_seq
 ALTER TABLE public.tafiffs_id_market_seq OWNER TO postgres;
 
 --
--- TOC entry 1991 (class 0 OID 0)
--- Dependencies: 181
+-- TOC entry 2001 (class 0 OID 0)
+-- Dependencies: 185
 -- Name: tafiffs_id_market_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: postgres
 --
 
@@ -316,7 +370,7 @@ ALTER SEQUENCE public.tafiffs_id_market_seq OWNED BY public.tariffs.id_market;
 
 
 --
--- TOC entry 178 (class 1259 OID 16420)
+-- TOC entry 182 (class 1259 OID 16420)
 -- Name: xm_data_hourly_per_agent; Type: TABLE; Schema: public; Owner: postgres; Tablespace: 
 --
 
@@ -330,7 +384,7 @@ CREATE TABLE public.xm_data_hourly_per_agent (
 ALTER TABLE public.xm_data_hourly_per_agent OWNER TO postgres;
 
 --
--- TOC entry 177 (class 1259 OID 16418)
+-- TOC entry 181 (class 1259 OID 16418)
 -- Name: xm_data_hourly_per_agent_id_xmdhpa_seq; Type: SEQUENCE; Schema: public; Owner: postgres
 --
 
@@ -345,8 +399,8 @@ CREATE SEQUENCE public.xm_data_hourly_per_agent_id_xmdhpa_seq
 ALTER TABLE public.xm_data_hourly_per_agent_id_xmdhpa_seq OWNER TO postgres;
 
 --
--- TOC entry 1992 (class 0 OID 0)
--- Dependencies: 177
+-- TOC entry 2002 (class 0 OID 0)
+-- Dependencies: 181
 -- Name: xm_data_hourly_per_agent_id_xmdhpa_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: postgres
 --
 
@@ -354,7 +408,7 @@ ALTER SEQUENCE public.xm_data_hourly_per_agent_id_xmdhpa_seq OWNED BY public.xm_
 
 
 --
--- TOC entry 1855 (class 2604 OID 16399)
+-- TOC entry 1865 (class 2604 OID 16399)
 -- Name: id_record; Type: DEFAULT; Schema: public; Owner: postgres
 --
 
@@ -362,7 +416,7 @@ ALTER TABLE ONLY public.consumption ALTER COLUMN id_record SET DEFAULT nextval('
 
 
 --
--- TOC entry 1857 (class 2604 OID 16415)
+-- TOC entry 1867 (class 2604 OID 16415)
 -- Name: id_record; Type: DEFAULT; Schema: public; Owner: postgres
 --
 
@@ -370,7 +424,7 @@ ALTER TABLE ONLY public.injection ALTER COLUMN id_record SET DEFAULT nextval('pu
 
 
 --
--- TOC entry 1856 (class 2604 OID 16407)
+-- TOC entry 1866 (class 2604 OID 16407)
 -- Name: id_record; Type: DEFAULT; Schema: public; Owner: postgres
 --
 
@@ -378,7 +432,7 @@ ALTER TABLE ONLY public.records ALTER COLUMN id_record SET DEFAULT nextval('publ
 
 
 --
--- TOC entry 1859 (class 2604 OID 16431)
+-- TOC entry 1869 (class 2604 OID 16431)
 -- Name: id_services; Type: DEFAULT; Schema: public; Owner: postgres
 --
 
@@ -386,7 +440,7 @@ ALTER TABLE ONLY public.services ALTER COLUMN id_services SET DEFAULT nextval('p
 
 
 --
--- TOC entry 1860 (class 2604 OID 16441)
+-- TOC entry 1870 (class 2604 OID 16441)
 -- Name: id_market; Type: DEFAULT; Schema: public; Owner: postgres
 --
 
@@ -394,7 +448,7 @@ ALTER TABLE ONLY public.tariffs ALTER COLUMN id_market SET DEFAULT nextval('publ
 
 
 --
--- TOC entry 1858 (class 2604 OID 16423)
+-- TOC entry 1868 (class 2604 OID 16423)
 -- Name: id_xmdhpa; Type: DEFAULT; Schema: public; Owner: postgres
 --
 
@@ -402,7 +456,7 @@ ALTER TABLE ONLY public.xm_data_hourly_per_agent ALTER COLUMN id_xmdhpa SET DEFA
 
 
 --
--- TOC entry 1862 (class 2606 OID 16401)
+-- TOC entry 1872 (class 2606 OID 16401)
 -- Name: consumption_pkey; Type: CONSTRAINT; Schema: public; Owner: postgres; Tablespace: 
 --
 
@@ -411,7 +465,7 @@ ALTER TABLE ONLY public.consumption
 
 
 --
--- TOC entry 1866 (class 2606 OID 16417)
+-- TOC entry 1876 (class 2606 OID 16417)
 -- Name: injection_pkey; Type: CONSTRAINT; Schema: public; Owner: postgres; Tablespace: 
 --
 
@@ -420,7 +474,7 @@ ALTER TABLE ONLY public.injection
 
 
 --
--- TOC entry 1864 (class 2606 OID 16409)
+-- TOC entry 1874 (class 2606 OID 16409)
 -- Name: records_pkey; Type: CONSTRAINT; Schema: public; Owner: postgres; Tablespace: 
 --
 
@@ -429,7 +483,7 @@ ALTER TABLE ONLY public.records
 
 
 --
--- TOC entry 1870 (class 2606 OID 16433)
+-- TOC entry 1880 (class 2606 OID 16433)
 -- Name: services_pkey; Type: CONSTRAINT; Schema: public; Owner: postgres; Tablespace: 
 --
 
@@ -438,7 +492,7 @@ ALTER TABLE ONLY public.services
 
 
 --
--- TOC entry 1868 (class 2606 OID 16425)
+-- TOC entry 1878 (class 2606 OID 16425)
 -- Name: xm_data_hourly_per_agent_pkey; Type: CONSTRAINT; Schema: public; Owner: postgres; Tablespace: 
 --
 
@@ -447,7 +501,7 @@ ALTER TABLE ONLY public.xm_data_hourly_per_agent
 
 
 --
--- TOC entry 1985 (class 0 OID 0)
+-- TOC entry 1995 (class 0 OID 0)
 -- Dependencies: 6
 -- Name: SCHEMA public; Type: ACL; Schema: -; Owner: postgres
 --
@@ -458,7 +512,7 @@ GRANT ALL ON SCHEMA public TO postgres;
 GRANT ALL ON SCHEMA public TO PUBLIC;
 
 
--- Completed on 2023-11-02 09:18:35
+-- Completed on 2023-11-07 10:36:27
 
 --
 -- PostgreSQL database dump complete
