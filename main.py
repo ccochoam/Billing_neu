@@ -1,12 +1,12 @@
-from service import start_services
+from services import start_services
 
 def main():
-    print("Bienvenido a Facturación de Energía")
+    print("Bienvenido a ProyectoEnergia")
     
-    result_billing = start_services()
+    resultado_factura = start_services()
     
     print("Resultado de la factura de energía:")
-    print(result_billing)
+    print(resultado_factura)
 
 if __name__ == "__main__":
     main()
